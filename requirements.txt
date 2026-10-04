@@ -1,0 +1,6 @@
+opencv-contrib-python
+mediapipe
+requests
+beautifulsoup4
+customtkinter
+flask

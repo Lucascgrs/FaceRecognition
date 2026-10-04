@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>Recherche de visage</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --fond: #1a1b1e;
+    --panneau: #242529;
+    --bordure: #3a3b40;
+    --texte: #e6e6e6;
+    --texte-attenue: #9a9a9f;
+    --accent: #4f8cff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--fond);
+    color: var(--texte);
+    font-family: "Segoe UI", Arial, sans-serif;
+    padding: 24px;
+  }
+  h1 { font-size: 20px; margin: 0 0 16px; }
+  .panneau {
+    background: var(--panneau);
+    border: 1px solid var(--bordure);
+    border-radius: 10px;
+    padding: 20px;
+    margin-bottom: 20px;
+  }
+  .ligne-upload {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  #apercu {
+    width: 90px;
+    height: 90px;
+    object-fit: cover;
+    border-radius: 8px;
+    border: 1px solid var(--bordure);
+    display: none;
+  }
+  button {
+    background: var(--accent);
+    color: white;
+    border: none;
+    border-radius: 6px;
+    padding: 10px 18px;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  button:disabled { opacity: 0.5; cursor: default; }
+  input[type=file] { color: var(--texte); }
+  .seuil-ligne {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .seuil-ligne input[type=range] { flex: 1; }
+  #valeur-seuil { min-width: 48px; text-align: right; font-variant-numeric: tabular-nums; }
+  #message { color: var(--texte-attenue); margin-top: 8px; }
+  #message.erreur { color: #ff6b6b; }
+  #compte-resultats { color: var(--texte-attenue); margin-bottom: 12px; }
+  .grille {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 14px;
+  }
+  .carte {
+    background: var(--panneau);
+    border: 1px solid var(--bordure);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .carte img { width: 100%; height: 140px; object-fit: cover; display: block; }
+  .carte .infos { padding: 8px 10px; font-size: 12px; }
+  .carte .score { font-weight: 600; color: var(--accent); }
+  .carte .nom { color: var(--texte); }
+  .carte .date, .carte .source { color: var(--texte-attenue); display: block; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .carte .source a { color: var(--texte-attenue); }
+  #zone-resultats { display: none; }
+</style>
+</head>
+<body>
+  <h1>Recherche de visage dans les sightings</h1>
+
+  <div class="panneau">
+    <div class="ligne-upload">
+      <img id="apercu" alt="Apercu">
+      <input type="file" id="fichier-photo" accept="image/*">
+      <button id="bouton-rechercher" disabled>Rechercher</button>
+    </div>
+    <div id="message"></div>
+  </div>
+
+  <div class="panneau" id="zone-seuil" style="display:none">
+    <div class="seuil-ligne">
+      <label for="curseur-seuil">Seuil de ressemblance (score cosinus)</label>
+      <input type="range" id="curseur-seuil" min="0" max="1" step="0.01" value="{{ seuil_defaut }}">
+      <span id="valeur-seuil">{{ seuil_defaut }}</span>
+    </div>
+  </div>
+
+  <div id="zone-resultats">
+    <div id="compte-resultats"></div>
+    <div class="grille" id="grille-resultats"></div>
+  </div>
+
+<script>
+const inputFichier = document.getElementById("fichier-photo");
+const apercu = document.getElementById("apercu");
+const boutonRechercher = document.getElementById("bouton-rechercher");
+const message = document.getElementById("message");
+const zoneSeuil = document.getElementById("zone-seuil");
+const curseurSeuil = document.getElementById("curseur-seuil");
+const valeurSeuil = document.getElementById("valeur-seuil");
+const zoneResultats = document.getElementById("zone-resultats");
+const compteResultats = document.getElementById("compte-resultats");
+const grilleResultats = document.getElementById("grille-resultats");
+
+let dernierResultats = [];
+
+inputFichier.addEventListener("change", () => {
+  const fichier = inputFichier.files[0];
+  boutonRechercher.disabled = !fichier;
+  if (fichier) {
+    apercu.src = URL.createObjectURL(fichier);
+    apercu.style.display = "block";
+  }
+});
+
+boutonRechercher.addEventListener("click", async () => {
+  const fichier = inputFichier.files[0];
+  if (!fichier) return;
+
+  boutonRechercher.disabled = true;
+  message.className = "";
+  message.textContent = "Recherche en cours...";
+  zoneResultats.style.display = "none";
+  zoneSeuil.style.display = "none";
+
+  const formData = new FormData();
+  formData.append("photo", fichier);
+
+  try {
+    const reponse = await fetch("/api/rechercher", { method: "POST", body: formData });
+    const donnees = await reponse.json();
+
+    if (!reponse.ok) {
+      message.className = "erreur";
+      message.textContent = donnees.erreur || "Erreur inconnue.";
+      return;
+    }
+
+    dernierResultats = donnees.resultats;
+    message.className = "";
+    message.textContent = donnees.nb_visages_photo > 1
+      ? `${donnees.nb_visages_photo} visages detectes dans la photo, recherche basee sur le plus grand.`
+      : "Visage detecte.";
+
+    zoneSeuil.style.display = "block";
+    zoneResultats.style.display = "block";
+    afficherResultats();
+  } catch (e) {
+    message.className = "erreur";
+    message.textContent = "Impossible de contacter le serveur.";
+  } finally {
+    boutonRechercher.disabled = false;
+  }
+});
+
+curseurSeuil.addEventListener("input", () => {
+  valeurSeuil.textContent = parseFloat(curseurSeuil.value).toFixed(2);
+  afficherResultats();
+});
+
+function formaterDate(timestampSecondes) {
+  return new Date(timestampSecondes * 1000).toLocaleString("fr-FR");
+}
+
+function afficherResultats() {
+  const seuil = parseFloat(curseurSeuil.value);
+  valeurSeuil.textContent = seuil.toFixed(2);
+
+  const filtres = dernierResultats.filter(r => r.score >= seuil);
+  compteResultats.textContent = `${filtres.length} correspondance(s) sur ${dernierResultats.length} visage(s) enregistres`;
+
+  grilleResultats.innerHTML = "";
+  for (const r of filtres) {
+    const carte = document.createElement("div");
+    carte.className = "carte";
+
+    const source = r.source
+      ? `<span class="source"><a href="${r.source}" target="_blank" rel="noopener">${r.source}</a></span>`
+      : "";
+
+    carte.innerHTML = `
+      <img src="${r.image_url}" loading="lazy" alt="Visage">
+      <div class="infos">
+        <div class="score">${r.score.toFixed(3)}</div>
+        <div class="nom">${r.nom || "Inconnu"}</div>
+        <span class="date">${formaterDate(r.timestamp)}</span>
+        ${source}
+      </div>
+    `;
+    grilleResultats.appendChild(carte);
+  }
+}
+</script>
+</body>
+</html>
